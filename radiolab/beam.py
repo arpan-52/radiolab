@@ -467,5 +467,117 @@ def check_common_resolution(headers: List[fits.Header]) -> Tuple[bool, List[Beam
             abs(beam.bmin - ref.bmin) > tolerance or
             abs(beam.bpa - ref.bpa) > tolerance):
             return False, beams
-    
+
     return True, beams
+
+
+def check_pixel_scales(headers: List[fits.Header], tolerance: float = 1e-6) -> Tuple[bool, List[Tuple[float, float]]]:
+    """
+    Check if all images have the same pixel scale.
+
+    Parameters
+    ----------
+    headers : list of fits.Header
+        FITS headers to check.
+    tolerance : float
+        Relative tolerance for comparison.
+
+    Returns
+    -------
+    common : bool
+        True if all pixel scales are identical (within tolerance).
+    scales : list of tuple
+        List of (dx, dy) pixel scales in degrees.
+    """
+    scales = []
+    for h in headers:
+        dx, dy = get_pixel_scale(h)
+        scales.append((dx, dy))
+
+    if len(scales) <= 1:
+        return True, scales
+
+    ref_dx, ref_dy = scales[0]
+
+    for dx, dy in scales[1:]:
+        if (abs(dx - ref_dx) / ref_dx > tolerance or
+            abs(dy - ref_dy) / ref_dy > tolerance):
+            return False, scales
+
+    return True, scales
+
+
+def regrid_to_reference(
+    data: np.ndarray,
+    header: fits.Header,
+    reference_header: fits.Header,
+) -> Tuple[np.ndarray, fits.Header]:
+    """
+    Regrid image to match a reference WCS.
+
+    Uses reproject for accurate flux-conserving interpolation.
+
+    Parameters
+    ----------
+    data : np.ndarray
+        Image data to regrid.
+    header : fits.Header
+        Header of input image.
+    reference_header : fits.Header
+        Header defining the target WCS grid.
+
+    Returns
+    -------
+    regridded : np.ndarray
+        Regridded image data.
+    new_header : fits.Header
+        Updated header with new WCS.
+    """
+    try:
+        from reproject import reproject_interp
+    except ImportError:
+        raise ImportError(
+            "The 'reproject' package is required for regridding. "
+            "Install with: pip install reproject"
+        )
+
+    from astropy.wcs import WCS
+
+    # Get input WCS (celestial only)
+    input_wcs = WCS(header).celestial
+    target_wcs = WCS(reference_header).celestial
+
+    # Get target shape from reference header
+    target_shape = (reference_header['NAXIS2'], reference_header['NAXIS1'])
+
+    # Squeeze data if needed (remove degenerate axes)
+    data_2d = np.squeeze(data)
+
+    # Create input HDU-like object
+    input_data = (data_2d, input_wcs)
+
+    # Reproject
+    regridded, footprint = reproject_interp(
+        input_data,
+        target_wcs,
+        shape_out=target_shape,
+        order='bilinear',
+    )
+
+    # Handle pixels outside footprint
+    regridded[footprint == 0] = np.nan
+
+    # Create new header with target WCS but preserve beam info
+    new_header = reference_header.copy()
+
+    # Preserve beam from original header
+    for key in ['BMAJ', 'BMIN', 'BPA']:
+        if key in header:
+            new_header[key] = header[key]
+
+    # Preserve frequency info from original header
+    for key in ['FREQ', 'RESTFREQ', 'RESTFRQ', 'REFFREQ', 'CRVAL3', 'CRVAL4']:
+        if key in header:
+            new_header[key] = header[key]
+
+    return regridded.astype(np.float32), new_header

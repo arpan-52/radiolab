@@ -15,7 +15,9 @@ from scipy import optimize
 from astropy.io import fits
 
 from .io import load_images
-from .beam import check_common_resolution, compute_common_beam, smooth_to_beam, get_beam, Beam
+from .beam import (check_common_resolution, compute_common_beam, smooth_to_beam,
+                   get_beam, Beam, check_pixel_scales, regrid_to_reference,
+                   get_pixel_scale)
 from .utils import compute_rms, create_mask
 
 
@@ -373,31 +375,71 @@ def _prepare_data(
     frequencies: Optional[np.ndarray],
     target_beam: Optional[Beam],
 ) -> Tuple[np.ndarray, np.ndarray, Optional[fits.Header]]:
-    """Prepare data for spectral fitting."""
-    
+    """Prepare data for spectral fitting.
+
+    Order of operations:
+    1. Load images
+    2. Regrid to common WCS/pixel scale (if needed)
+    3. Smooth to common beam (if needed)
+    4. Stack into cube
+    """
+
     if isinstance(cube_or_images, np.ndarray):
         # Direct cube input
         if frequencies is None:
             raise ValueError("frequencies required when providing a cube array")
         return cube_or_images, np.asarray(frequencies), None
-    
+
     # Load from images
-    data_dict, header_dict = load_images(cube_or_images, 
+    data_dict, header_dict = load_images(cube_or_images,
                                          list(frequencies) if frequencies else None)
-    
+
     sorted_freqs = sorted(data_dict.keys())
     freq_array = np.array(sorted_freqs)
-    
-    # Check and smooth beams
     headers = [header_dict[f] for f in sorted_freqs]
-    common, beams = check_common_resolution(headers)
 
-    # Debug: show original beams
+    # =========================================
+    # STEP 1: Check and regrid to common WCS
+    # =========================================
+    common_pixscale, scales = check_pixel_scales(headers)
+
+    print("Pixel scales:")
+    for freq, (dx, dy) in zip(sorted_freqs, scales):
+        print(f"  {freq/1e9:.4f} GHz: {dx*3600:.3f}\" x {dy*3600:.3f}\"")
+
+    if not common_pixscale:
+        # Use the first image as reference (or could choose finest scale)
+        ref_freq = sorted_freqs[0]
+        ref_header = header_dict[ref_freq]
+        print(f"Regridding all images to reference WCS (from {ref_freq/1e9:.4f} GHz)")
+
+        for freq in sorted_freqs:
+            if freq == ref_freq:
+                continue  # Skip reference image
+
+            data = data_dict[freq]
+            header = header_dict[freq]
+
+            print(f"  Regridding {freq/1e9:.4f} GHz...")
+            regridded, new_header = regrid_to_reference(data, header, ref_header)
+            data_dict[freq] = regridded
+            header_dict[freq] = new_header
+
+        # Update headers list after regridding
+        headers = [header_dict[f] for f in sorted_freqs]
+    else:
+        print("All images have same pixel scale")
+
+    # =========================================
+    # STEP 2: Check and smooth to common beam
+    # =========================================
+    common_beam, beams = check_common_resolution(headers)
+
     print("Original beams:")
     for freq, beam in zip(sorted_freqs, beams):
         print(f"  {freq/1e9:.4f} GHz: {beam}")
 
-    if not common or target_beam is not None:
+    if not common_beam or target_beam is not None:
         if target_beam is None:
             target_beam = compute_common_beam(beams)
         print(f"Smoothing to common beam: {target_beam}")
@@ -421,17 +463,19 @@ def _prepare_data(
             data_dict[freq] = smoothed
             header_dict[freq] = new_header
     else:
-        print("All images already at common resolution")
-    
-    # Stack into cube
+        print("All images already at common beam")
+
+    # =========================================
+    # STEP 3: Stack into cube
+    # =========================================
     nfreq = len(sorted_freqs)
     sample_data = data_dict[sorted_freqs[0]]
     ny, nx = sample_data.shape[-2:]
-    
+
     cube = np.zeros((nfreq, ny, nx), dtype=np.float32)
     for i, freq in enumerate(sorted_freqs):
         cube[i] = data_dict[freq]
-    
+
     return cube, freq_array, header_dict[sorted_freqs[0]]
 
 
