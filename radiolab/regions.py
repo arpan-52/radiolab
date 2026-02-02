@@ -71,7 +71,7 @@ def region_to_mask(
 ) -> np.ndarray:
     """
     Convert a region to a boolean mask.
-    
+
     Parameters
     ----------
     region : Region
@@ -80,7 +80,7 @@ def region_to_mask(
         (ny, nx) shape of the output mask.
     header : fits.Header, optional
         Header with WCS (required for sky regions).
-        
+
     Returns
     -------
     np.ndarray
@@ -88,43 +88,29 @@ def region_to_mask(
     """
     if not HAS_REGIONS:
         raise ImportError("The 'regions' package is required")
-    
+
     from astropy.wcs import WCS
-    
+
     # Create WCS if header provided
     wcs = WCS(header).celestial if header is not None else None
-    
+
     # Convert sky region to pixel region if needed
     if hasattr(region, 'to_pixel') and wcs is not None:
         region = region.to_pixel(wcs)
-    
-    # Create mask
+
+    # Create mask using to_image() which handles bounding box internally
     mask = region.to_mask(mode='center')
-    
-    # Apply to full image
-    full_mask = np.zeros(shape, dtype=bool)
-    
-    if mask is not None:
-        # Get bounding box
-        bbox = mask.bbox
-        slices = bbox.slices
-        
-        # Clip to image bounds
-        y_slice = slice(max(0, slices[0].start), min(shape[0], slices[0].stop))
-        x_slice = slice(max(0, slices[1].start), min(shape[1], slices[1].stop))
-        
-        # Get the corresponding part of the mask
-        mask_data = mask.data
-        
-        # Adjust mask indices if we clipped
-        my_start = max(0, -slices[0].start)
-        my_stop = my_start + (y_slice.stop - y_slice.start)
-        mx_start = max(0, -slices[1].start)
-        mx_stop = mx_start + (x_slice.stop - x_slice.start)
-        
-        full_mask[y_slice, x_slice] = mask_data[my_start:my_stop, mx_start:mx_stop] > 0
-    
-    return full_mask
+
+    if mask is None:
+        return np.zeros(shape, dtype=bool)
+
+    # Use to_image() to get full-size mask array
+    full_mask = mask.to_image(shape)
+
+    if full_mask is None:
+        return np.zeros(shape, dtype=bool)
+
+    return full_mask.astype(bool)
 
 
 def create_polygon_mask(
