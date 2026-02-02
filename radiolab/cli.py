@@ -413,7 +413,7 @@ Output files:
             sigma=args.sigma,
             reference_freq=ref_freq,
             target_beam=target_beam,
-            region_mask=region_mask,
+            mask=region_mask,
         )
         
         print(f"Reference frequency: {result.reference_freq/1e9:.3f} GHz")
