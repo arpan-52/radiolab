@@ -391,18 +391,37 @@ def _prepare_data(
     # Check and smooth beams
     headers = [header_dict[f] for f in sorted_freqs]
     common, beams = check_common_resolution(headers)
-    
+
+    # Debug: show original beams
+    print("Original beams:")
+    for freq, beam in zip(sorted_freqs, beams):
+        print(f"  {freq/1e9:.4f} GHz: {beam}")
+
     if not common or target_beam is not None:
         if target_beam is None:
             target_beam = compute_common_beam(beams)
-            print(f"Smoothing to common beam: {target_beam}")
-        
+        print(f"Smoothing to common beam: {target_beam}")
+
         for freq in sorted_freqs:
             data = data_dict[freq]
             header = header_dict[freq]
+            current_beam = get_beam(header)
+
+            # Debug: show flux stats before smoothing
+            valid_data = data[np.isfinite(data)]
+            print(f"  {freq/1e9:.4f} GHz: beam {current_beam.bmaj_arcsec:.2f}\" -> {target_beam.bmaj_arcsec:.2f}\"")
+            print(f"    Before: min={np.nanmin(data):.3e}, max={np.nanmax(data):.3e}, median={np.nanmedian(valid_data):.3e}")
+
             smoothed, new_header = smooth_to_beam(data, header, target_beam)
+
+            # Debug: show flux stats after smoothing
+            valid_smoothed = smoothed[np.isfinite(smoothed)]
+            print(f"    After:  min={np.nanmin(smoothed):.3e}, max={np.nanmax(smoothed):.3e}, median={np.nanmedian(valid_smoothed):.3e}")
+
             data_dict[freq] = smoothed
             header_dict[freq] = new_header
+    else:
+        print("All images already at common resolution")
     
     # Stack into cube
     nfreq = len(sorted_freqs)
