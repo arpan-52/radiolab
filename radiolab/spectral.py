@@ -206,10 +206,11 @@ def fit_spectral_index(
     reference_freq: Optional[float] = None,
     target_beam: Optional[Beam] = None,
     mask: Optional[np.ndarray] = None,
+    region_file: Optional[str] = None,
 ) -> SpectralFitResult:
     """
     Perform pixel-by-pixel spectral fitting.
-    
+
     Parameters
     ----------
     cube_or_images : np.ndarray or dict or str
@@ -234,37 +235,49 @@ def fit_spectral_index(
     target_beam : Beam, optional
         Target beam to smooth all images to before fitting.
     mask : np.ndarray, optional
-        Boolean mask of pixels to fit. If provided, overrides sigma threshold.
-        
+        Boolean mask of pixels to fit. Combined with SNR threshold.
+    region_file : str, optional
+        Path to DS9/CRTF region file. The region mask is created AFTER
+        regridding so it aligns with the final pixel grid.
+
     Returns
     -------
     SpectralFitResult
         Dataclass containing coefficient maps, error maps, and metadata.
-        
+
     Examples
     --------
     Fit spectral index only:
-    
+
     >>> result = fit_spectral_index(cube, frequencies, order=1)
     >>> alpha = result.spectral_index
-    
+
     Fit with curvature:
-    
+
     >>> result = fit_spectral_index(cube, frequencies, order=2)
     >>> alpha = result.spectral_index
     >>> beta = result.curvature
-    
+
     Using images directly:
-    
+
     >>> images = {1.4e9: 'im1.fits', 1.5e9: 'im2.fits'}
     >>> result = fit_spectral_index(images, order=1, sigma=5)
     """
-    # Load/prepare data
+    # Load/prepare data (regrid + smooth)
     cube, frequencies, header = _prepare_data(
         cube_or_images, frequencies, target_beam
     )
-    
+
     nfreq, ny, nx = cube.shape
+
+    # Create region mask AFTER regridding (so it aligns with final pixel grid)
+    region_mask = None
+    if region_file is not None:
+        from .regions import load_region, region_to_mask
+        print(f"Creating region mask from: {region_file}")
+        regions = load_region(region_file)
+        region_mask = region_to_mask(regions[0], (ny, nx), header)
+        print(f"  Region contains {np.sum(region_mask)} pixels")
     
     if nfreq < order + 1:
         raise ValueError(
@@ -295,14 +308,21 @@ def fit_spectral_index(
         rms_array = np.asarray(rms)
         print(f"Using provided per-frequency RMS")
 
-    # Create mask based on per-frequency SNR
-    if mask is None:
-        # Require all frequencies to be above sigma*rms
-        snr_mask = np.ones((ny, nx), dtype=bool)
-        for i in range(nfreq):
-            snr_mask &= (cube[i] > sigma * rms_array[i])
-        mask = snr_mask
-        print(f"Pixels above {sigma}σ at all frequencies: {np.sum(mask)} / {ny*nx}")
+    # Create SNR mask - require all frequencies to be above sigma*rms
+    snr_mask = np.ones((ny, nx), dtype=bool)
+    for i in range(nfreq):
+        snr_mask &= (cube[i] > sigma * rms_array[i])
+    print(f"Pixels above {sigma}σ at all frequencies: {np.sum(snr_mask)} / {ny*nx}")
+
+    # Combine masks: SNR mask AND region mask AND input mask
+    final_mask = snr_mask.copy()
+    if region_mask is not None:
+        final_mask &= region_mask
+        print(f"Pixels in region AND above {sigma}σ: {np.sum(final_mask)}")
+    if mask is not None:
+        final_mask &= mask
+        print(f"Pixels after applying input mask: {np.sum(final_mask)}")
+    mask = final_mask
     
     # Initialize output arrays
     coefficients = np.full((order + 1, ny, nx), np.nan, dtype=np.float32)

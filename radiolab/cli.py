@@ -347,22 +347,11 @@ Output files:
     if args.ref_freq:
         ref_freq = parse_frequencies(args.ref_freq)[0]
     
-    # Handle region
-    region_mask = None
-    if args.region:
-        from .regions import load_region, region_to_mask
-        print(f"Loading region: {args.region}")
-        region = load_region(args.region)
-        
-        # Get WCS for region mask
-        if header is None and isinstance(cube, list) and cube:
-            with fits.open(cube[0]) as hdul:
-                header = hdul[0].header
-        
-        if header is not None:
-            # load_region returns a Regions collection, use first region
-            region_mask = region_to_mask(region[0], (header['NAXIS2'], header['NAXIS1']), header)
-            print(f"Region contains {np.sum(region_mask)} pixels")
+    # Handle region - pass file path to fit_spectral_index so mask is created
+    # AFTER regridding (so pixels align correctly)
+    region_file = args.region if args.region else None
+    if region_file:
+        print(f"Will apply region mask from: {region_file}")
     
     try:
         # Check for integrated mode
@@ -413,7 +402,7 @@ Output files:
             sigma=args.sigma,
             reference_freq=ref_freq,
             target_beam=target_beam,
-            mask=region_mask,
+            region_file=region_file,
         )
         
         print(f"Reference frequency: {result.reference_freq/1e9:.3f} GHz")
