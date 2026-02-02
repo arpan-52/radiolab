@@ -23,7 +23,7 @@ from .utils import compute_rms, create_mask
 class SpectralFitResult:
     """
     Result of spectral index fitting.
-    
+
     Attributes
     ----------
     coefficients : np.ndarray
@@ -40,8 +40,8 @@ class SpectralFitResult:
         Boolean mask of fitted pixels (True = fitted).
     chi2 : np.ndarray
         Reduced χ² per pixel.
-    rms_used : float
-        RMS value used for thresholding.
+    rms_used : np.ndarray
+        RMS values used for thresholding, one per frequency.
     frequencies : np.ndarray
         Array of frequencies used in the fit.
     """
@@ -50,7 +50,7 @@ class SpectralFitResult:
     reference_freq: float
     mask: np.ndarray
     chi2: np.ndarray
-    rms_used: float
+    rms_used: np.ndarray
     frequencies: np.ndarray
     
     @property
@@ -274,23 +274,33 @@ def fit_spectral_index(
     if reference_freq is None:
         reference_freq = np.sqrt(frequencies.min() * frequencies.max())
     
-    print(f"Fitting order-{order} polynomial (α" + 
-          (", β" if order >= 2 else "") + 
+    print(f"Fitting order-{order} polynomial (α" +
+          (", β" if order >= 2 else "") +
           (f", + {order-2} higher terms" if order > 2 else "") + ")")
     print(f"Reference frequency: {reference_freq/1e9:.3f} GHz")
-    
-    # Compute RMS if not provided
+
+    # Compute per-frequency RMS
     if rms is None:
-        # Use the first plane to estimate RMS
-        rms = compute_rms(cube[0])
-        print(f"Computed RMS: {rms:.3e}")
-    
-    # Create mask
+        rms_array = np.array([compute_rms(cube[i]) for i in range(nfreq)])
+        print(f"Computed per-frequency RMS:")
+        for i, (freq, r) in enumerate(zip(frequencies, rms_array)):
+            print(f"  {freq/1e9:.4f} GHz: {r:.3e}")
+    elif np.isscalar(rms):
+        # Single RMS provided, use for all frequencies
+        rms_array = np.full(nfreq, rms)
+        print(f"Using provided RMS: {rms:.3e}")
+    else:
+        rms_array = np.asarray(rms)
+        print(f"Using provided per-frequency RMS")
+
+    # Create mask based on per-frequency SNR
     if mask is None:
-        # Mask based on maximum flux across frequencies
-        max_flux = np.nanmax(cube, axis=0)
-        mask = max_flux > sigma * rms
-        print(f"Pixels above {sigma}σ: {np.sum(mask)} / {ny*nx}")
+        # Require all frequencies to be above sigma*rms
+        snr_mask = np.ones((ny, nx), dtype=bool)
+        for i in range(nfreq):
+            snr_mask &= (cube[i] > sigma * rms_array[i])
+        mask = snr_mask
+        print(f"Pixels above {sigma}σ at all frequencies: {np.sum(mask)} / {ny*nx}")
     
     # Initialize output arrays
     coefficients = np.full((order + 1, ny, nx), np.nan, dtype=np.float32)
@@ -306,39 +316,40 @@ def fit_spectral_index(
         for ix in range(nx):
             if not mask[iy, ix]:
                 continue
-            
+
             flux = cube[:, iy, ix]
-            
+
             # Skip if not enough valid points
             valid = (flux > 0) & np.isfinite(flux)
             if np.sum(valid) < order + 1:
                 continue
-            
-            # Fit
+
+            # Fit with per-frequency RMS as flux errors for proper weighting
             coef, err, chi2_r = fit_powerlaw(
-                frequencies, flux, 
+                frequencies, flux,
                 order=order,
+                flux_error=rms_array,
                 reference_freq=reference_freq,
             )
-            
+
             coefficients[:, iy, ix] = coef
             errors[:, iy, ix] = err
             chi2[iy, ix] = chi2_r
             n_fitted += 1
-        
+
         # Progress indicator
         if (iy + 1) % max(1, ny // 10) == 0:
             print(f"  Progress: {100*(iy+1)//ny}%")
-    
+
     print(f"Fitted {n_fitted} / {n_total} masked pixels")
-    
+
     return SpectralFitResult(
         coefficients=coefficients,
         errors=errors,
         reference_freq=reference_freq,
         mask=mask,
         chi2=chi2,
-        rms_used=rms,
+        rms_used=rms_array,
         frequencies=frequencies,
     )
 

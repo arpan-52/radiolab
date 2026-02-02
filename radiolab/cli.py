@@ -417,7 +417,7 @@ Output files:
         )
         
         print(f"Reference frequency: {result.reference_freq/1e9:.3f} GHz")
-        print(f"RMS used: {result.rms_used:.3e}")
+        print(f"RMS used (per freq): {', '.join(f'{r:.3e}' for r in result.rms_used)}")
         print(f"Pixels fitted: {np.sum(result.mask)}")
         
         # Load header for WCS if we don't have one
