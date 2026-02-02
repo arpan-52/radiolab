@@ -207,13 +207,22 @@ def save_fits(
     """
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
-    
+
     # Update header dimensions
     header = header.copy()
+
+    # Remove extra NAXISj keywords for higher dimensions
+    for i in range(data.ndim + 1, 10):
+        for key in [f'NAXIS{i}', f'CTYPE{i}', f'CRVAL{i}', f'CDELT{i}',
+                    f'CRPIX{i}', f'CUNIT{i}', f'CROTA{i}']:
+            if key in header:
+                del header[key]
+
+    # Set correct dimensions
+    header['NAXIS'] = data.ndim
     for i, size in enumerate(data.shape[::-1], 1):
         header[f'NAXIS{i}'] = size
-    header['NAXIS'] = data.ndim
-    
+
     fits.writeto(path, data.astype(np.float32), header, overwrite=overwrite)
 
 
