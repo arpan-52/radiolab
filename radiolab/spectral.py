@@ -311,7 +311,11 @@ def fit_spectral_index(
     print("Fitting spectra...")
     n_fitted = 0
     n_total = np.sum(mask)
-    
+
+    # Debug: print first few fitted pixels to verify fitting
+    debug_count = 0
+    debug_max = 5
+
     for iy in range(ny):
         for ix in range(nx):
             if not mask[iy, ix]:
@@ -331,6 +335,16 @@ def fit_spectral_index(
                 flux_error=rms_array,
                 reference_freq=reference_freq,
             )
+
+            # Debug output for first few pixels
+            if debug_count < debug_max and np.isfinite(coef[1]):
+                freq_ghz = frequencies / 1e9
+                print(f"  Debug pixel ({iy},{ix}):")
+                print(f"    Freq (GHz): {freq_ghz}")
+                print(f"    Flux: {flux}")
+                print(f"    Ratio S_high/S_low: {flux[1]/flux[0]:.4f}")
+                print(f"    Spectral index α: {coef[1]:.3f}")
+                debug_count += 1
 
             coefficients[:, iy, ix] = coef
             errors[:, iy, ix] = err
