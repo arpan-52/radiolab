@@ -33,6 +33,54 @@ def parse_frequencies(freq_str: str) -> List[float]:
     return frequencies
 
 
+def parse_input_files(input_str: str) -> List[str]:
+    """
+    Parse input string into list of files.
+    
+    Supports:
+    - Comma-separated file paths: "file1.fits,file2.fits"
+    - Glob patterns: "images/*.fits"
+    - Combination: "dir1/*.fits,dir2/*.fits"
+    - Single files: "image.fits"
+    
+    Returns
+    -------
+    List[str]
+        List of resolved file paths.
+        
+    Raises
+    ------
+    FileNotFoundError
+        If a specified file doesn't exist.
+    """
+    import glob as glob_module
+    
+    files = []
+    for part in input_str.split(','):
+        part = part.strip()
+        if not part:
+            continue
+            
+        if '*' in part or '?' in part:
+            # Glob pattern
+            matched = sorted(glob_module.glob(part))
+            if not matched:
+                raise FileNotFoundError(f"No files match pattern: {part}")
+            files.extend(matched)
+        else:
+            # Single file
+            if not Path(part).exists():
+                raise FileNotFoundError(f"File not found: {part}")
+            files.append(part)
+    
+    if not files:
+        raise FileNotFoundError(f"No files found from input: {input_str}")
+    
+    return files
+
+
+
+
 def make_cube_cli():
     """CLI for creating spectral cubes."""
     parser = argparse.ArgumentParser(
@@ -43,6 +91,9 @@ def make_cube_cli():
 Examples:
   # Auto-detect frequencies from FITS headers
   radiolab-cube "images/*.fits" -o cube.fits
+  
+  # Comma-separated files
+  radiolab-cube "img1.fits,img2.fits,img3.fits" -o cube.fits
   
   # With explicit frequencies (overrides auto-detection)
   radiolab-cube "images/*.fits" -f 1.4GHz,1.5GHz,1.6GHz -o cube.fits
@@ -57,7 +108,7 @@ Examples:
     
     parser.add_argument(
         'images',
-        help='Glob pattern for input FITS images (e.g., "images/*.fits")'
+        help='Glob pattern or comma-separated FITS images'
     )
     parser.add_argument(
         '-f', '--frequencies',
@@ -84,6 +135,14 @@ Examples:
     from .cube import make_cube
     from .beam import Beam
     
+    # Parse input files
+    try:
+        files = parse_input_files(args.images)
+        print(f"Found {len(files)} files")
+    except FileNotFoundError as e:
+        print(f"Error: {e}", file=sys.stderr)
+        sys.exit(1)
+    
     # Parse frequencies
     frequencies = None
     if args.frequencies:
@@ -105,7 +164,7 @@ Examples:
     
     try:
         cube, header, freqs = make_cube(
-            args.images,
+            files,  # Pass parsed file list
             frequencies=frequencies,
             zoom=args.zoom,
             target_beam=target_beam,
@@ -133,11 +192,15 @@ Examples:
   # Fit with curvature (order=2)
   radiolab-spectral cube.fits -o spectral --order 2
   
-  # From individual images (frequencies auto-detected)
+  # From individual images (comma-separated or glob)
   radiolab-spectral "images/*.fits" -o spectral
+  radiolab-spectral "img1.fits,img2.fits,img3.fits" -o spectral
   
-  # Custom RMS and sigma threshold
-  radiolab-spectral cube.fits -o spectral --rms 1e-4 --sigma 5
+  # With region (only fit pixels within region)
+  radiolab-spectral cube.fits -o spectral --region source.reg
+  
+  # Integrated spectrum from region
+  radiolab-spectral cube.fits -o spectrum.txt --region source.reg --integrated
 
 Note: Frequencies and beams are automatically read from FITS headers. If images have
 different beam sizes, they are smoothed to either --beam (if specified) or the
@@ -155,7 +218,7 @@ Output files:
     
     parser.add_argument(
         'input',
-        help='Input FITS cube or glob pattern for images'
+        help='Input FITS cube, glob pattern, or comma-separated files'
     )
     parser.add_argument(
         '-f', '--frequencies',
@@ -192,6 +255,15 @@ Output files:
         '--beam',
         help='Target beam as bmaj,bmin,bpa in arcsec,arcsec,degrees'
     )
+    parser.add_argument(
+        '--region',
+        help='DS9/CRTF region file (fit only pixels within region)'
+    )
+    parser.add_argument(
+        '--integrated',
+        action='store_true',
+        help='If --region is provided, compute integrated spectrum instead of resolved'
+    )
     
     args = parser.parse_args()
     
@@ -200,44 +272,69 @@ Output files:
     from .beam import Beam
     from .io import freq_from_header
     
-    # Determine if input is a cube or images
-    input_path = Path(args.input)
+    header = None
+    frequencies = None
     
-    if input_path.suffix == '.fits' and '*' not in args.input:
-        # Single FITS file - assume it's a cube
-        print(f"Loading cube: {args.input}")
+    # Check if input contains comma or glob - means multiple files
+    is_multi_file = ',' in args.input or '*' in args.input or '?' in args.input
+    
+    # Check if single .fits file that exists (i.e., a cube)
+    input_path = Path(args.input)
+    is_single_cube = (input_path.suffix.lower() == '.fits' and 
+                      input_path.exists() and 
+                      not is_multi_file)
+    
+    if is_single_cube:
+        # Single FITS file - could be a cube or a single image
+        print(f"Loading: {args.input}")
         with fits.open(args.input) as hdul:
-            cube = hdul[0].data
+            data = hdul[0].data
             header = hdul[0].header
         
-        # Extract frequencies from header
-        nfreq = cube.shape[0]
-        if args.frequencies:
-            frequencies = np.array(parse_frequencies(args.frequencies))
+        # Check if it's a cube (3D or 4D)
+        if data.ndim >= 3:
+            cube = data
+            nfreq = cube.shape[0] if data.ndim == 3 else cube.shape[1]
+            
+            if args.frequencies:
+                frequencies = np.array(parse_frequencies(args.frequencies))
+            else:
+                # Try to read from header
+                frequencies = []
+                for i in range(nfreq):
+                    key = f'FREQ{i:04d}'
+                    if key in header:
+                        frequencies.append(header[key])
+                    else:
+                        # Fallback to CRVAL3 + i*CDELT3
+                        crval3 = header.get('CRVAL3', 1e9)
+                        cdelt3 = header.get('CDELT3', 1e8)
+                        crpix3 = header.get('CRPIX3', 1)
+                        frequencies.append(crval3 + (i + 1 - crpix3) * cdelt3)
+                frequencies = np.array(frequencies)
+            
+            print(f"Cube shape: {cube.shape}")
+            print(f"Frequencies: {frequencies/1e9} GHz")
         else:
-            # Try to read from header
-            frequencies = []
-            for i in range(nfreq):
-                key = f'FREQ{i:04d}'
-                if key in header:
-                    frequencies.append(header[key])
-                else:
-                    # Fallback to CRVAL3 + i*CDELT3
-                    crval3 = header.get('CRVAL3', 1e9)
-                    cdelt3 = header.get('CDELT3', 1e8)
-                    frequencies.append(crval3 + i * cdelt3)
-            frequencies = np.array(frequencies)
-        
-        print(f"Cube shape: {cube.shape}")
-        print(f"Frequencies: {frequencies/1e9} GHz")
+            # Single 2D image - shouldn't happen for spectral fitting
+            print("Error: Single 2D image provided. Need multiple frequencies for spectral fitting.", file=sys.stderr)
+            sys.exit(1)
     else:
-        # Glob pattern - load images (frequencies auto-detected)
-        frequencies = None
+        # Multiple files - parse them
+        try:
+            files = parse_input_files(args.input)
+            print(f"Found {len(files)} files:")
+            for f in files:
+                print(f"  {f}")
+        except FileNotFoundError as e:
+            print(f"Error: {e}", file=sys.stderr)
+            sys.exit(1)
+        
         if args.frequencies:
             frequencies = np.array(parse_frequencies(args.frequencies))
         
-        cube = args.input  # Pass pattern to fit_spectral_index
-        header = None
+        # Pass file list to fit_spectral_index
+        cube = files
     
     # Parse beam
     target_beam = None
@@ -250,7 +347,64 @@ Output files:
     if args.ref_freq:
         ref_freq = parse_frequencies(args.ref_freq)[0]
     
+    # Handle region
+    region_mask = None
+    if args.region:
+        from .regions import load_region, region_to_mask
+        print(f"Loading region: {args.region}")
+        region = load_region(args.region)
+        
+        # Get WCS for region mask
+        if header is None and isinstance(cube, list) and cube:
+            with fits.open(cube[0]) as hdul:
+                header = hdul[0].header
+        
+        if header is not None:
+            from astropy.wcs import WCS
+            wcs = WCS(header).celestial
+            region_mask = region_to_mask(region, wcs, header['NAXIS1'], header['NAXIS2'])
+            print(f"Region contains {np.sum(region_mask)} pixels")
+    
     try:
+        # Check for integrated mode
+        if args.integrated and args.region:
+            from .regions import fit_region_spectrum
+            print(f"Computing integrated spectrum within region...")
+            
+            coeffs, errors, chi2 = fit_region_spectrum(
+                cube if isinstance(cube, np.ndarray) else None,
+                frequencies,
+                region_file=args.region,
+                header=header,
+                mode='integrated',
+                order=args.order,
+                images=cube if isinstance(cube, list) else None,
+            )
+            
+            # Save as text file
+            output_file = args.output if args.output.endswith('.txt') else f"{args.output}.txt"
+            with open(output_file, 'w') as f:
+                f.write(f"# RadioLab Integrated Spectrum Fit\n")
+                f.write(f"# Region: {args.region}\n")
+                f.write(f"# Order: {args.order}\n")
+                f.write(f"# Chi2_reduced: {chi2:.4f}\n")
+                f.write(f"#\n")
+                f.write(f"# Coefficient  Value  Error\n")
+                
+                names = ['log_amplitude', 'spectral_index', 'curvature']
+                names.extend([f'coef_{i}' for i in range(3, len(coeffs))])
+                
+                for i, (coef, err) in enumerate(zip(coeffs, errors)):
+                    name = names[i] if i < len(names) else f'a{i}'
+                    f.write(f"{name}  {coef:.6f}  {err:.6f}\n")
+            
+            print(f"Results saved to: {output_file}")
+            print(f"Spectral index: {coeffs[1]:.3f} ± {errors[1]:.3f}")
+            if args.order >= 2:
+                print(f"Curvature: {coeffs[2]:.3f} ± {errors[2]:.3f}")
+            return
+        
+        # Regular fitting (resolved)
         print(f"Fitting order-{args.order} polynomial...")
         result = fit_spectral_index(
             cube,
@@ -260,19 +414,17 @@ Output files:
             sigma=args.sigma,
             reference_freq=ref_freq,
             target_beam=target_beam,
+            region_mask=region_mask,
         )
         
         print(f"Reference frequency: {result.reference_freq/1e9:.3f} GHz")
         print(f"RMS used: {result.rms_used:.3e}")
         print(f"Pixels fitted: {np.sum(result.mask)}")
         
-        # Load header for WCS if we have one
-        if isinstance(cube, str):
-            import glob
-            files = sorted(glob.glob(cube))
-            if files:
-                with fits.open(files[0]) as hdul:
-                    header = hdul[0].header
+        # Load header for WCS if we don't have one
+        if header is None and isinstance(cube, list) and cube:
+            with fits.open(cube[0]) as hdul:
+                header = hdul[0].header
         
         # Save results
         print(f"Saving results with prefix: {args.output}")
@@ -285,6 +437,8 @@ Output files:
         import traceback
         traceback.print_exc()
         sys.exit(1)
+
+
 
 
 def region_spectrum_cli():
