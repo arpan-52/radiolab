@@ -360,7 +360,8 @@ Output files:
                 header = hdul[0].header
         
         if header is not None:
-            region_mask = region_to_mask(region, (header['NAXIS2'], header['NAXIS1']), header)
+            # load_region returns a Regions collection, use first region
+            region_mask = region_to_mask(region[0], (header['NAXIS2'], header['NAXIS1']), header)
             print(f"Region contains {np.sum(region_mask)} pixels")
     
     try:
