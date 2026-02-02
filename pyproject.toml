@@ -1,0 +1,56 @@
+[build-system]
+requires = ["setuptools>=61.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "radiolab"
+version = "0.1.0"
+description = "RadioLab - Post-processing toolkit for radio astronomy images"
+readme = "README.md"
+license = {text = "MIT"}
+requires-python = ">=3.9"
+authors = [
+    {name = "Arpan Pal", email = "arpan522000@gmail.com"}
+]
+keywords = ["radio astronomy", "spectral index", "FITS", "image processing", "radiolab"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Science/Research",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.9",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Scientific/Engineering :: Astronomy",
+]
+
+dependencies = [
+    "numpy>=1.20",
+    "astropy>=5.0",
+    "scipy>=1.7",
+    "regions>=0.7",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=7.0",
+    "pytest-cov",
+]
+
+[project.scripts]
+radiolab = "radiolab.cli:main"
+radiolab-cube = "radiolab.cli:make_cube_cli"
+radiolab-spectral = "radiolab.cli:fit_spectral_cli"
+radiolab-region = "radiolab.cli:region_spectrum_cli"
+radiolab-smooth = "radiolab.cli:smooth_cli"
+
+[project.urls]
+Homepage = "https://github.com/arpan/radiolab"
+
+[tool.setuptools.packages.find]
+where = ["."]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-v"
