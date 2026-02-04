@@ -263,66 +263,52 @@ def fit_spectral_index(
     >>> images = {1.4e9: 'im1.fits', 1.5e9: 'im2.fits'}
     >>> result = fit_spectral_index(images, order=1, sigma=5)
     """
-    # Load/prepare data (regrid + smooth)
-    cube, frequencies, header = _prepare_data(
-        cube_or_images, frequencies, target_beam
+    # Load/prepare data: RMS estimated on full images, then mask, regrid, smooth
+    cube, frequencies, header, rms_array = _prepare_data(
+        cube_or_images, frequencies, target_beam, region_file
     )
 
     nfreq, ny, nx = cube.shape
 
-    # Create region mask AFTER regridding (so it aligns with final pixel grid)
-    region_mask = None
-    if region_file is not None:
-        from .regions import load_region, region_to_mask
-        print(f"Creating region mask from: {region_file}")
-        regions = load_region(region_file)
-        region_mask = region_to_mask(regions[0], (ny, nx), header)
-        print(f"  Region contains {np.sum(region_mask)} pixels")
-    
     if nfreq < order + 1:
         raise ValueError(
             f"Need at least {order + 1} frequency planes for order-{order} fit, "
             f"but only have {nfreq}"
         )
-    
+
     # Reference frequency
     if reference_freq is None:
         reference_freq = np.sqrt(frequencies.min() * frequencies.max())
-    
+
     print(f"Fitting order-{order} polynomial (α" +
           (", β" if order >= 2 else "") +
           (f", + {order-2} higher terms" if order > 2 else "") + ")")
     print(f"Reference frequency: {reference_freq/1e9:.3f} GHz")
 
-    # Compute per-frequency RMS
-    if rms is None:
-        rms_array = np.array([compute_rms(cube[i]) for i in range(nfreq)])
-        print(f"Computed per-frequency RMS:")
-        for i, (freq, r) in enumerate(zip(frequencies, rms_array)):
-            print(f"  {freq/1e9:.4f} GHz: {r:.3e}")
-    elif np.isscalar(rms):
-        # Single RMS provided, use for all frequencies
-        rms_array = np.full(nfreq, rms)
-        print(f"Using provided RMS: {rms:.3e}")
+    # Use provided RMS if given, otherwise use RMS from _prepare_data
+    if rms is not None:
+        if np.isscalar(rms):
+            rms_array = np.full(nfreq, rms)
+            print(f"Using provided RMS: {rms:.3e}")
+        else:
+            rms_array = np.asarray(rms)
+            print(f"Using provided per-frequency RMS")
     else:
-        rms_array = np.asarray(rms)
-        print(f"Using provided per-frequency RMS")
+        print(f"Using RMS from full images (before masking):")
 
     # Create SNR mask - require all frequencies to be above sigma*rms
+    # Note: region mask was already applied in _prepare_data (pixels outside are NaN)
     snr_mask = np.ones((ny, nx), dtype=bool)
     for i in range(nfreq):
+        # NaN pixels (outside region) will fail this test
         snr_mask &= (cube[i] > sigma * rms_array[i])
-    print(f"Pixels above {sigma}σ at all frequencies: {np.sum(snr_mask)} / {ny*nx}")
+    print(f"Pixels above {sigma}σ at all frequencies: {np.sum(snr_mask)}")
 
-    # Combine masks: SNR mask AND region mask AND input mask
-    final_mask = snr_mask.copy()
-    if region_mask is not None:
-        final_mask &= region_mask
-        print(f"Pixels in region AND above {sigma}σ: {np.sum(final_mask)}")
+    # Combine with any additional input mask
     if mask is not None:
-        final_mask &= mask
-        print(f"Pixels after applying input mask: {np.sum(final_mask)}")
-    mask = final_mask
+        snr_mask &= mask
+        print(f"Pixels after applying input mask: {np.sum(snr_mask)}")
+    mask = snr_mask
     
     # Initialize output arrays
     coefficients = np.full((order + 1, ny, nx), np.nan, dtype=np.float32)
@@ -394,21 +380,27 @@ def _prepare_data(
     cube_or_images: Union[np.ndarray, Dict[float, str], str],
     frequencies: Optional[np.ndarray],
     target_beam: Optional[Beam],
-) -> Tuple[np.ndarray, np.ndarray, Optional[fits.Header]]:
+    region_file: Optional[str] = None,
+) -> Tuple[np.ndarray, np.ndarray, Optional[fits.Header], np.ndarray]:
     """Prepare data for spectral fitting.
 
     Order of operations:
     1. Load images
-    2. Regrid to common WCS/pixel scale (if needed)
-    3. Smooth to common beam (if needed)
-    4. Stack into cube
+    2. Estimate RMS (on full images, before cutting)
+    3. Apply region mask (world coordinates)
+    4. Regrid to common WCS/pixel scale
+    5. Smooth to common beam
+    6. Stack into cube
+
+    Returns cube, frequencies, header, rms_array
     """
 
     if isinstance(cube_or_images, np.ndarray):
         # Direct cube input
         if frequencies is None:
             raise ValueError("frequencies required when providing a cube array")
-        return cube_or_images, np.asarray(frequencies), None
+        rms_array = np.array([compute_rms(cube_or_images[i]) for i in range(cube_or_images.shape[0])])
+        return cube_or_images, np.asarray(frequencies), None, rms_array
 
     # Load from images
     data_dict, header_dict = load_images(cube_or_images,
@@ -416,11 +408,44 @@ def _prepare_data(
 
     sorted_freqs = sorted(data_dict.keys())
     freq_array = np.array(sorted_freqs)
-    headers = [header_dict[f] for f in sorted_freqs]
 
     # =========================================
-    # STEP 1: Check and regrid to common WCS
+    # STEP 1: Estimate RMS on full images (before any cutting)
     # =========================================
+    print("Estimating RMS on full images:")
+    rms_dict = {}
+    for freq in sorted_freqs:
+        data = data_dict[freq]
+        rms = compute_rms(data)
+        rms_dict[freq] = rms
+        print(f"  {freq/1e9:.4f} GHz: RMS = {rms:.3e}")
+
+    # =========================================
+    # STEP 2: Apply region mask (world coordinates)
+    # =========================================
+    if region_file is not None:
+        from .regions import load_region, region_to_mask
+        print(f"Applying region mask from: {region_file}")
+        regions = load_region(region_file)
+
+        for freq in sorted_freqs:
+            data = data_dict[freq]
+            header = header_dict[freq]
+            ny, nx = data.shape[-2:]
+
+            # Create mask in world coordinates (works regardless of pixel scale)
+            mask = region_to_mask(regions[0], (ny, nx), header)
+            print(f"  {freq/1e9:.4f} GHz: region contains {np.sum(mask)} pixels")
+
+            # Set pixels outside region to NaN
+            data_masked = data.copy()
+            data_masked[~mask] = np.nan
+            data_dict[freq] = data_masked
+
+    # =========================================
+    # STEP 3: Regrid to common WCS
+    # =========================================
+    headers = [header_dict[f] for f in sorted_freqs]
     common_pixscale, scales = check_pixel_scales(headers)
 
     print("Pixel scales:")
@@ -428,14 +453,14 @@ def _prepare_data(
         print(f"  {freq/1e9:.4f} GHz: {dx*3600:.3f}\" x {dy*3600:.3f}\"")
 
     if not common_pixscale:
-        # Use the first image as reference (or could choose finest scale)
+        # Use the first image as reference
         ref_freq = sorted_freqs[0]
         ref_header = header_dict[ref_freq]
         print(f"Regridding all images to reference WCS (from {ref_freq/1e9:.4f} GHz)")
 
         for freq in sorted_freqs:
             if freq == ref_freq:
-                continue  # Skip reference image
+                continue
 
             data = data_dict[freq]
             header = header_dict[freq]
@@ -445,13 +470,12 @@ def _prepare_data(
             data_dict[freq] = regridded
             header_dict[freq] = new_header
 
-        # Update headers list after regridding
         headers = [header_dict[f] for f in sorted_freqs]
     else:
         print("All images have same pixel scale")
 
     # =========================================
-    # STEP 2: Check and smooth to common beam
+    # STEP 4: Smooth to common beam
     # =========================================
     common_beam, beams = check_common_resolution(headers)
 
@@ -469,24 +493,16 @@ def _prepare_data(
             header = header_dict[freq]
             current_beam = get_beam(header)
 
-            # Debug: show flux stats before smoothing
-            valid_data = data[np.isfinite(data)]
             print(f"  {freq/1e9:.4f} GHz: beam {current_beam.bmaj_arcsec:.2f}\" -> {target_beam.bmaj_arcsec:.2f}\"")
-            print(f"    Before: min={np.nanmin(data):.3e}, max={np.nanmax(data):.3e}, median={np.nanmedian(valid_data):.3e}")
 
             smoothed, new_header = smooth_to_beam(data, header, target_beam)
-
-            # Debug: show flux stats after smoothing
-            valid_smoothed = smoothed[np.isfinite(smoothed)]
-            print(f"    After:  min={np.nanmin(smoothed):.3e}, max={np.nanmax(smoothed):.3e}, median={np.nanmedian(valid_smoothed):.3e}")
-
             data_dict[freq] = smoothed
             header_dict[freq] = new_header
     else:
         print("All images already at common beam")
 
     # =========================================
-    # STEP 3: Stack into cube
+    # STEP 5: Stack into cube
     # =========================================
     nfreq = len(sorted_freqs)
     sample_data = data_dict[sorted_freqs[0]]
@@ -496,7 +512,9 @@ def _prepare_data(
     for i, freq in enumerate(sorted_freqs):
         cube[i] = data_dict[freq]
 
-    return cube, freq_array, header_dict[sorted_freqs[0]]
+    rms_array = np.array([rms_dict[f] for f in sorted_freqs])
+
+    return cube, freq_array, header_dict[sorted_freqs[0]], rms_array
 
 
 def save_spectral_fit(

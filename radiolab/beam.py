@@ -340,10 +340,15 @@ def get_convolution_kernel(
     # We want major axis to be at angle theta from x-axis
     kernel = Gaussian2DKernel(
         x_stddev=kernel_sigma_min,  # minor axis
-        y_stddev=kernel_sigma_maj,  # major axis  
+        y_stddev=kernel_sigma_maj,  # major axis
         theta=kernel_theta,
     )
-    
+
+    # Verify kernel is normalized (sums to 1) for flux conservation
+    kernel_sum = np.sum(kernel.array)
+    if abs(kernel_sum - 1.0) > 0.01:
+        print(f"  WARNING: Kernel sum = {kernel_sum:.4f} (should be 1.0)")
+
     return kernel
 
 
