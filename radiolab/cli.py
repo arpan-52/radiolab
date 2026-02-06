@@ -91,24 +91,32 @@ def make_cube_cli():
 Examples:
   # Auto-detect frequencies from FITS headers
   radiolab-cube "images/*.fits" -o cube.fits
-  
-  # Comma-separated files
+
+  # Comma-separated files or glob patterns
   radiolab-cube "img1.fits,img2.fits,img3.fits" -o cube.fits
-  
+  radiolab-cube "band1/*.fits,band2/*.fits" -o cube.fits
+
   # With explicit frequencies (overrides auto-detection)
   radiolab-cube "images/*.fits" -f 1.4GHz,1.5GHz,1.6GHz -o cube.fits
-  
-  # With zoom to central 512x512 pixels
-  radiolab-cube "images/*.fits" -o cube.fits --zoom 512
-  
+
+  # Crop to central 10 arcmin region (before regridding for efficiency)
+  radiolab-cube "images/*.fits" -o cube.fits --zoom 10
+
   # Smooth to specific beam (arcsec)
   radiolab-cube "images/*.fits" -o cube.fits --beam 10,10,0
+
+Pipeline:
+  1. Load images, sort by frequency
+  2. Crop to angular size (if --zoom) - done FIRST for efficiency
+  3. Regrid to common pixel scale (if images differ)
+  4. Smooth to common beam
+  5. Stack into cube
         """
     )
-    
+
     parser.add_argument(
         'images',
-        help='Glob pattern or comma-separated FITS images'
+        help='Glob pattern or comma-separated FITS images (e.g., "*.fits" or "a.fits,b.fits")'
     )
     parser.add_argument(
         '-f', '--frequencies',
@@ -121,8 +129,8 @@ Examples:
     )
     parser.add_argument(
         '--zoom',
-        type=int,
-        help='Crop to central NxN pixels'
+        type=float,
+        help='Crop to central region of this size in arcminutes (e.g., --zoom 10 for 10 arcmin)'
     )
     parser.add_argument(
         '--beam',
