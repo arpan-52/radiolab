@@ -286,10 +286,12 @@ def crop_around_sky_position(
     """
     Crop image around a given sky position (RA, Dec) to a given angular size.
 
+    Uses astropy Cutout2D which correctly updates the WCS.
+
     Parameters
     ----------
     data : np.ndarray
-        Image data (2D).
+        Image data (2D or with degenerate leading axes).
     header : fits.Header
         FITS header with WCS.
     ra : float
@@ -298,59 +300,29 @@ def crop_around_sky_position(
         Declination in degrees.
     size_arcmin : float
         Size of the cutout in arcminutes (square).
-
-    Returns
-    -------
-    cropped_data : np.ndarray
-        Cropped image data.
-    cropped_header : fits.Header
-        Updated header with correct WCS.
-
-    Raises
-    ------
-    ValueError
-        If the sky position falls outside the image.
     """
+    from astropy.nddata import Cutout2D
+    from astropy.coordinates import SkyCoord
+    from astropy.wcs import WCS
+    import astropy.units as u
+
     wcs = WCS(header).celestial
+    position = SkyCoord(ra=ra * u.deg, dec=dec * u.deg)
+    size = u.Quantity((size_arcmin, size_arcmin), u.arcmin)
 
-    # Convert sky position to pixel coordinates (0-indexed)
-    px, py = wcs.all_world2pix(ra, dec, 0)
-    cx, cy = int(round(px)), int(round(py))
+    # Cutout2D needs 2D data
+    data_2d = np.squeeze(data)
 
-    ny, nx = data.shape[-2:]
+    cutout = Cutout2D(data_2d, position=position, size=size, wcs=wcs,
+                      mode='trim', copy=True)
 
-    if not (0 <= cx < nx and 0 <= cy < ny):
-        raise ValueError(
-            f"Sky position (RA={ra:.4f}, Dec={dec:.4f}) falls outside image "
-            f"(pixel {cx},{cy} vs image {nx}x{ny})"
-        )
+    # Build updated header: start from original, patch in new WCS + shape
+    new_header = header.copy()
+    new_header.update(cutout.wcs.to_header())
+    new_header['NAXIS1'] = cutout.data.shape[1]
+    new_header['NAXIS2'] = cutout.data.shape[0]
 
-    # Pixel scale
-    from .beam import get_pixel_scale
-    dx, dy = get_pixel_scale(header)
-    size_deg = size_arcmin / 60.0
-    half_x = int(np.ceil(size_deg / (2.0 * dx)))
-    half_y = int(np.ceil(size_deg / (2.0 * dy)))
-    half = min(half_x, half_y)
-
-    # Compute crop bounds, clamped to image edges
-    x_start = max(0, cx - half)
-    x_end   = min(nx, cx + half)
-    y_start = max(0, cy - half)
-    y_end   = min(ny, cy + half)
-
-    cropped_data = data[..., y_start:y_end, x_start:x_end]
-
-    # Update header: shift CRPIX by the crop offset
-    header = header.copy()
-    header['NAXIS1'] = x_end - x_start
-    header['NAXIS2'] = y_end - y_start
-    if 'CRPIX1' in header:
-        header['CRPIX1'] = header['CRPIX1'] - x_start
-    if 'CRPIX2' in header:
-        header['CRPIX2'] = header['CRPIX2'] - y_start
-
-    return cropped_data, header
+    return cutout.data, new_header
 
 
 def freq_from_header(header: fits.Header) -> Optional[float]:
