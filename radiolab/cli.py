@@ -618,19 +618,15 @@ Examples:
     
     args = parser.parse_args()
     
-    import glob
     from astropy.io import fits
     from .beam import Beam, get_beam, compute_common_beam, smooth_to_beam
     from .io import save_fits
-    
-    # Find input files
-    if '*' in args.input:
-        files = sorted(glob.glob(args.input))
-    else:
-        files = [args.input]
-    
-    if not files:
-        print(f"Error: No files found matching {args.input}", file=sys.stderr)
+
+    # Find input files (supports comma-separated and glob patterns)
+    try:
+        files = parse_input_files(args.input)
+    except FileNotFoundError as e:
+        print(f"Error: {e}", file=sys.stderr)
         sys.exit(1)
     
     print(f"Found {len(files)} file(s)")

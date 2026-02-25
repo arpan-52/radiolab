@@ -83,105 +83,71 @@ def load_images(
             header_dict[float(freq)] = header
         if verbose:
             print(f"Loaded {len(data_dict)} images from dictionary")
-    elif isinstance(source, list):
-        # List of files
-        files = source
-        
-        if not files:
-            raise ValueError("Empty file list provided")
-        
-        if verbose:
-            print(f"Loading {len(files)} files from list")
-        
-        if frequencies is None:
-            # Try to extract frequencies from headers first
-            frequencies = []
-            freq_sources = []
-            
-            for f in files:
-                _, header = load_image(f)
-                freq = freq_from_header(header)
-                source_type = "header"
-                
-                if freq is None:
-                    # Try filename as fallback
-                    freq = parse_frequency_from_filename(Path(f).name)
-                    source_type = "filename"
-                
-                if freq is None:
-                    raise ValueError(
-                        f"Could not extract frequency from {f}. "
-                        "Please provide frequencies with -f option."
-                    )
-                
-                frequencies.append(freq)
-                freq_sources.append(source_type)
-            
-            if verbose:
-                print("Auto-detected frequencies:")
-                for f, freq, src in zip(files, frequencies, freq_sources):
-                    print(f"  {Path(f).name}: {freq/1e9:.4f} GHz (from {src})")
-        
-        if len(files) != len(frequencies):
-            raise ValueError(
-                f"Number of files ({len(files)}) doesn't match "
-                f"number of frequencies ({len(frequencies)})"
-            )
-        
-        for freq, path in zip(frequencies, files):
-            data, header = load_image(path)
-            data_dict[float(freq)] = data
-            header_dict[float(freq)] = header
     else:
-        # Glob pattern string
-        files = sorted(glob.glob(source))
-        
+        # Resolve to a list of file paths
+        if isinstance(source, list):
+            files = source
+        else:
+            # String: support comma-separated glob patterns
+            files = []
+            for part in source.split(','):
+                part = part.strip()
+                if not part:
+                    continue
+                matched = sorted(glob.glob(part))
+                if not matched:
+                    raise ValueError(f"No files found matching pattern: {part}")
+                files.extend(matched)
+
         if not files:
-            raise ValueError(f"No files found matching pattern: {source}")
-        
+            raise ValueError("No files provided or matched")
+
         if verbose:
-            print(f"Found {len(files)} files matching pattern")
-        
+            print(f"Loading {len(files)} files")
+
+        # Load all files once, cache data+header
+        loaded = []
+        for f in files:
+            data, header = load_image(f)
+            loaded.append((f, data, header))
+
         if frequencies is None:
-            # Try to extract frequencies from headers first
+            # Auto-detect frequencies from headers, fall back to filename
             frequencies = []
             freq_sources = []
-            
-            for f in files:
-                _, header = load_image(f)
+
+            for f, data, header in loaded:
                 freq = freq_from_header(header)
                 source_type = "header"
-                
+
                 if freq is None:
-                    # Try filename as fallback
                     freq = parse_frequency_from_filename(Path(f).name)
                     source_type = "filename"
-                
+
                 if freq is None:
                     raise ValueError(
                         f"Could not extract frequency from {f}. "
                         "Please provide frequencies with -f option."
                     )
-                
+
                 frequencies.append(freq)
                 freq_sources.append(source_type)
-            
+
             if verbose:
                 print("Auto-detected frequencies:")
-                for f, freq, src in zip(files, frequencies, freq_sources):
+                for (f, _, _), freq, src in zip(loaded, frequencies, freq_sources):
                     print(f"  {Path(f).name}: {freq/1e9:.4f} GHz (from {src})")
-        
+
         if len(files) != len(frequencies):
             raise ValueError(
                 f"Number of files ({len(files)}) doesn't match "
                 f"number of frequencies ({len(frequencies)})"
             )
-        
-        for freq, path in zip(frequencies, files):
-            data, header = load_image(path)
+
+        for freq, (_, data, header) in zip(frequencies, loaded):
             data_dict[float(freq)] = data
             header_dict[float(freq)] = header
-    
+
     return data_dict, header_dict
 
 
