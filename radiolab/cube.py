@@ -11,54 +11,29 @@ from astropy.io import fits
 from .beam import (Beam, get_beam, compute_common_beam, smooth_to_beam,
                    check_common_resolution, check_pixel_scales, regrid_to_reference,
                    get_pixel_scale)
-from .io import load_image, load_images, save_fits, crop_to_center
+from .io import load_image, load_images, save_fits, crop_to_center, crop_around_sky_position
 
 
-def crop_to_angular_size(
-    data: np.ndarray,
-    header: fits.Header,
-    size_arcmin: float,
-) -> Tuple[np.ndarray, fits.Header]:
+def get_image_center_sky(header: fits.Header) -> Tuple[float, float]:
     """
-    Crop image to central region of given angular size.
+    Get the sky coordinate (RA, Dec) of the central pixel of an image.
 
     Parameters
     ----------
-    data : np.ndarray
-        Image data (2D or with leading dimensions).
     header : fits.Header
         FITS header with WCS.
-    size_arcmin : float
-        Size of the region in arcminutes (will be square).
 
     Returns
     -------
-    cropped_data : np.ndarray
-        Cropped image data.
-    cropped_header : fits.Header
-        Updated header with correct WCS.
+    ra, dec : float
+        Central sky position in degrees.
     """
-    # Get pixel scale in degrees
-    dx, dy = get_pixel_scale(header)
-
-    # Convert arcmin to degrees
-    size_deg = size_arcmin / 60.0
-
-    # Calculate number of pixels for this angular size
-    npix_x = int(np.ceil(size_deg / dx))
-    npix_y = int(np.ceil(size_deg / dy))
-
-    # Use the smaller to ensure square and within bounds
-    ny, nx = data.shape[-2:]
-    npix = min(npix_x, npix_y, nx, ny)
-
-    # Ensure even number for centering
-    npix = npix - (npix % 2)
-
-    print(f"  Cropping to {size_arcmin}' = {npix} pixels (pixel scale: {dx*3600:.2f}\")")
-
-    # Use existing crop function
-    return crop_to_center(data, header, npix)
+    from astropy.wcs import WCS
+    wcs = WCS(header).celestial
+    cx = header['NAXIS1'] / 2.0
+    cy = header['NAXIS2'] / 2.0
+    ra, dec = wcs.all_pix2world(cx, cy, 0)
+    return float(ra), float(dec)
 
 
 def make_cube(
@@ -141,13 +116,22 @@ def make_cube(
 
     # =========================================
     # STEP 1: Crop to angular size (BEFORE regridding)
+    # Use the reference image's sky center so all cutouts are aligned
     # =========================================
     if zoom is not None:
-        print(f"\nCropping to central {zoom} arcmin:")
+        ref_freq = sorted_freqs[0]
+        ref_ra, ref_dec = get_image_center_sky(header_dict[ref_freq])
+        print(f"\nCropping to central {zoom} arcmin around "
+              f"(RA={ref_ra:.4f}, Dec={ref_dec:.4f}):")
+
         for freq in sorted_freqs:
             data = data_dict[freq]
             header = header_dict[freq]
-            cropped, new_header = crop_to_angular_size(data, header, zoom)
+            dx, _ = get_pixel_scale(header)
+            print(f"  {freq/1e9:.4f} GHz (pixel scale: {dx*3600:.2f}\")")
+            cropped, new_header = crop_around_sky_position(
+                data, header, ref_ra, ref_dec, zoom
+            )
             data_dict[freq] = cropped
             header_dict[freq] = new_header
 
