@@ -41,6 +41,7 @@ def make_cube(
     frequencies: Optional[List[float]] = None,
     zoom: Optional[float] = None,
     target_beam: Optional[Beam] = None,
+    no_smooth: bool = False,
     output: Optional[str] = None,
 ) -> Tuple[np.ndarray, fits.Header, np.ndarray]:
     """
@@ -68,6 +69,8 @@ def make_cube(
     target_beam : Beam, optional
         Target beam to smooth all images to. If None and images have different
         beams, automatically computes the common beam.
+    no_smooth : bool, optional
+        If True, skip beam smoothing entirely (even if beams differ).
     output : str, optional
         If provided, save the cube to this path.
 
@@ -177,7 +180,9 @@ def make_cube(
     for freq, beam in zip(sorted_freqs, beams):
         print(f"  {freq/1e9:.4f} GHz: {beam}")
 
-    if not common:
+    if no_smooth:
+        print("Skipping beam smoothing (--no-smooth)")
+    elif not common:
         print("Images have different beams - smoothing to common resolution")
 
         if target_beam is None:

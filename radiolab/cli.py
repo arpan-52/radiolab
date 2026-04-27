@@ -136,9 +136,14 @@ Pipeline:
         '--beam',
         help='Target beam as bmaj,bmin,bpa in arcsec,arcsec,degrees'
     )
-    
+    parser.add_argument(
+        '--no-smooth',
+        action='store_true',
+        help='Skip beam smoothing (stack images as-is)'
+    )
+
     args = parser.parse_args()
-    
+
     # Import here to avoid slow startup
     from .cube import make_cube
     from .beam import Beam
@@ -176,6 +181,7 @@ Pipeline:
             frequencies=frequencies,
             zoom=args.zoom,
             target_beam=target_beam,
+            no_smooth=args.no_smooth,
             output=args.output,
         )
         print(f"Created cube: {args.output}")
