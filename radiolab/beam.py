@@ -386,51 +386,39 @@ def smooth_to_beam(
     if current_beam is None:
         raise ValueError("No beam information in header")
     
-    # Get pixel scale
     dx, dy = get_pixel_scale(header)
     pixscale = np.sqrt(dx * dy)  # Geometric mean
-    
-    # Get convolution kernel
+
     kernel = get_convolution_kernel(current_beam, target_beam, pixscale)
-    
+
     if kernel is None:
-        # No smoothing needed
-        if inplace:
-            new_header = header.copy()
-        else:
-            new_header = header.copy()
-        return data, new_header
-    
-    # Prepare output
-    if inplace:
-        result = data
-    else:
-        result = np.empty_like(data)
-    
-    # Handle NaN values
+        return data, header.copy()
+
+    result = data if inplace else np.empty_like(data)
+
     nan_mask = np.isnan(data)
     data_filled = np.where(nan_mask, 0.0, data)
-    
-    # Convolve
+
+    # Jy/beam: convolution preserves pixel sum but beam area has grown, so
+    # scale up to conserve integrated flux.
+    beam_area_ratio = target_beam.area / current_beam.area
+
     if data.ndim == 2:
-        smoothed = convolve_fft(data_filled, kernel, 
+        smoothed = convolve_fft(data_filled, kernel,
                                 normalize_kernel=True,
                                 allow_huge=True)
-        # Restore NaNs
+        smoothed *= beam_area_ratio
         smoothed[nan_mask] = np.nan
         result[:] = smoothed
     else:
-        # Handle 3D/4D data by iterating over leading dimensions
         for idx in np.ndindex(data.shape[:-2]):
-            slice_data = data_filled[idx]
-            slice_nan = nan_mask[idx]
-            smoothed = convolve_fft(slice_data, kernel,
+            smoothed = convolve_fft(data_filled[idx], kernel,
                                     normalize_kernel=True,
                                     allow_huge=True)
-            smoothed[slice_nan] = np.nan
+            smoothed *= beam_area_ratio
+            smoothed[nan_mask[idx]] = np.nan
             result[idx] = smoothed
-    
-    # Update header
+
     new_header = header.copy()
     new_header.update(target_beam.to_header_cards())
     
